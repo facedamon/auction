@@ -43,7 +43,7 @@ contract NftAuction is Initializable, UUPSUpgradeable {
     //AggregatorV3Interface internal dataFeed;
     mapping(address tokenAddress => AggregatorV3Interface) public dataFeeds;
 
-    function intialize() initializer public {
+    function initialize() initializer public {
         admin = msg.sender;
     }
 
