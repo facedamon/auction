@@ -20,13 +20,6 @@ contract NftAuctionFactory {
         auctionImplementation = _auctionImplementation;
     }
 
-    /**
-     * 修改逻辑：
-     *   1. 先将 NFT 从用户转移到工厂
-     *   2. 创建拍卖合约
-     *   3. 工厂授权拍卖合约可以操作NFT
-     *   4. 拍卖合约的 createAuction 会从工厂（msg.sender）转移 NFT 到自己
-     */
     function createAuction() external returns(address) {
         //部署代理合约
         bytes memory initData = abi.encodeWithSignature("initialize()");
