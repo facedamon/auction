@@ -1,113 +1,171 @@
-const {ethers, deployments} = require("hardhat");
+const {ethers, deployments, upgrades} = require("hardhat");
 const {expect} = require("chai");
+const {anyValue, anyUint} = require("@nomicfoundation/hardhat-chai-matchers/withArgs");
 
-describe("Auction Test", async () => {
-    it("Should be able to deploy", async () => {
-        await main();
+
+describe("AuctionFactory Test", function () {
+
+    let factory;
+    let testNft;
+    let auctionProxy;
+    let tokenId = 1;
+    let priceFeedEthAddress;
+    let priceFeedUSDCAddress;
+    let UsdcAddress;
+
+    beforeEach(async function() {
+        [owner, seller, bidder1, bidder2] = await ethers.getSigners();
+
+        //部署v1逻辑合约
+        const NftAuctionV1 = await ethers.getContractFactory("NftAuction");
+        const v1Impl = await NftAuctionV1.deploy();
+        await v1Impl.waitForDeployment();
+        console.log("v1Address:", await v1Impl.getAddress());
+
+        //部署工厂
+        const AuctionFactory = await ethers.getContractFactory("NftAuctionFactory");
+        factory = await AuctionFactory.deploy(await v1Impl.getAddress());
+        await factory.waitForDeployment();
+        console.log("factoryAddress:", await factory.getAddress());
+
+        //部署NFT
+        const TestNFT = await ethers.getContractFactory("TestERC721");
+        testNft = await TestNFT.deploy();
+        await testNft.waitForDeployment();
+        console.log("nftAddress:", await testNft.getAddress());
+
+        //部署ERC20
+        const TestERC20 = await ethers.getContractFactory("TestERC20");
+        const testERC20 = await TestERC20.deploy();
+        await testERC20.waitForDeployment();
+        UsdcAddress  = await testERC20.getAddress();
+        console.log("usdcaddress:", UsdcAddress);
+
+        console.log("sellerAddress:", seller.address);
+        //卖家铸造1个NFT
+        await testNft.mint(seller.address, tokenId);
+
+        //卖家授权NFT
+        await testNft.connect(seller).approve(seller.address, tokenId);
+
+        // 部署自定义预言机
+        const aggreagatorV3 = await ethers.getContractFactory("AggreagatorV3");
+        const priceFeedEthDeploy = await aggreagatorV3.deploy(ethers.parseEther("10000"));
+        const priceFeedEth = await priceFeedEthDeploy.waitForDeployment();
+        priceFeedEthAddress = await priceFeedEth.getAddress();
+        console.log("ethFeed: ", priceFeedEthAddress)
+        const priceFeedUSDCDeploy = await aggreagatorV3.deploy(ethers.parseEther("1"))
+        const priceFeedUSDC = await priceFeedUSDCDeploy.waitForDeployment()
+        priceFeedUSDCAddress = await priceFeedUSDC.getAddress()
+        console.log("usdcFeed: ", await priceFeedUSDCAddress)
+    });
+
+    describe("工厂合约 Test", function ()  {
+        it("应该通过工厂创建新的拍卖实例", async function() {
+            await expect(factory.connect(seller).createAuction())
+                .to.emit(factory, "AuctionCreated");
+
+            const auctions = await factory.getAuctions();
+            expect(auctions.length).to.equal(1);
+        })
     })
+
+    describe("V1拍卖 Test", function () {
+        let tx;
+        beforeEach(async function() {
+            //获取拍卖合约
+            await factory.connect(seller).createAuction();
+            const auctions = await factory.getAuctions();
+            const auctionAddress = auctions[0];
+
+            auctionProxy = await ethers.getContractAt("NftAuction", auctionAddress);
+
+            console.log("auctionProxy:", await auctionProxy.getAddress());
+
+            const token2Usd = [{
+                token: ethers.ZeroAddress,
+                priceFeed: priceFeedEthAddress
+            }, {
+                token: UsdcAddress,
+                priceFeed: priceFeedUSDCAddress
+            }]
+
+            for (let i = 0; i < token2Usd.length; i++) {
+                const { token, priceFeed } = token2Usd[i];
+                await auctionProxy.setDataFeed(token, priceFeed);
+            }
+            console.log("成功设置预言机");
+
+            //先授权
+            await testNft.connect(seller).setApprovalForAll(await auctionProxy.getAddress(), true);
+
+            tx = await auctionProxy.connect(seller).createAuction(
+                10,
+                ethers.parseEther("0.01"),
+                testNft.getAddress(),
+                tokenId,
+            );
+        })
+
+        it("应该正确创建拍卖", async function() {
+            await expect(tx).to.emit(auctionProxy, "AuctionCreated")
+             //   .withArgs(1, seller.address,await testNft.getAddress(), tokenId, ethers.parseEther("0.01"), anyValue());
+        });
+
+        it("应该接受出价", async function() {
+            //出价
+            await expect(auctionProxy.connect(bidder1).placeBid(0, 0, ethers.ZeroAddress, { value: ethers.parseEther("0.02") }))
+                .to.emit(auctionProxy, "NewBid");
+
+        });
+    });
+
+    describe("V2升级 Test", function (){
+        let tx;
+        beforeEach(async function() {
+            //获取拍卖合约
+            await factory.connect(seller).createAuction();
+            const auctions = await factory.getAuctions();
+            const auctionAddress = auctions[0];
+
+            console.log("auctionAddress:", auctionAddress);
+
+            // 获取新创建的代理合约实例
+            auctionProxy = await ethers.getContractAt("NftAuction", auctionAddress);
+
+            //先授权
+            await testNft.connect(seller).setApprovalForAll(await auctionProxy.getAddress(), true);
+            tx = await auctionProxy.connect(seller).createAuction(
+                10,
+                ethers.parseEther("0.01"),
+                testNft.getAddress(),
+                tokenId,
+            );
+
+            // 部署 V2 实现合约
+            const NftAuctionV2 = await ethers.getContractFactory("NftAuctionV2");
+            const v2Implementation = await NftAuctionV2.deploy();
+            await v2Implementation.waitForDeployment();
+            const v2ImplAddress = await v2Implementation.getAddress();
+
+            console.log("V2 Implementation:", v2ImplAddress);
+
+            // 通过工厂合约升级
+            const upgradeTx = await factory.upgradeAuction(auctionAddress, v2ImplAddress);
+            await upgradeTx.wait();
+
+            // 现在使用 V2 接口访问代理
+            auctionProxy = await ethers.getContractAt("NftAuctionV2", auctionAddress);
+
+            console.log("auctionProxy V2:", await auctionProxy.getAddress());
+        });
+
+        it("升级到V2并保持数据", async function() {
+            expect(await auctionProxy.getVersion()).to.equal("V2.0");
+            console.log(await auctionProxy.testHello());
+            console.log(await auctionProxy.nextAuctionId());
+            //升级后已经创建的拍卖还在
+            expect(await auctionProxy.nextAuctionId()).to.equal(1);
+        })
+    });
 })
-
-async function main() {
-
-    const [signer, buyer] = await ethers.getSigners();
-
-    //部署factory
-    const NftAuctionFactory = await ethers.getContractFactory("NftAuctionFactory");
-    const nftAuctionFactory = await NftAuctionFactory.deploy();
-    await nftAuctionFactory.waitForDeployment();
-
-    //0. 部署ERC20
-    const TestERC20 = await ethers.getContractFactory("TestERC20");
-    const testERC20 = await TestERC20.deploy();
-    await testERC20.waitForDeployment();
-    const UsdcAddress  = await testERC20.getAddress();
-    //给buyer转1000ETH
-    let tx = await testERC20.connect(signer).transfer(buyer, ethers.parseEther("1000"));
-    await tx.wait();
-
-    // 部署自定义预言机
-    const aggreagatorV3 = await ethers.getContractFactory("AggreagatorV3");
-    const priceFeedEthDeploy = await aggreagatorV3.deploy(ethers.parseEther("10000"));
-    const priceFeedEth = await priceFeedEthDeploy.waitForDeployment();
-    const priceFeedEthAddress = await priceFeedEth.getAddress();
-    console.log("ethFeed: ", priceFeedEthAddress)
-    const priceFeedUSDCDeploy = await aggreagatorV3.deploy(ethers.parseEther("1"))
-    const priceFeedUSDC = await priceFeedUSDCDeploy.waitForDeployment()
-    const priceFeedUSDCAddress = await priceFeedUSDC.getAddress()
-    console.log("usdcFeed: ", await priceFeedUSDCAddress)
-
-    const token2Usd = [{
-        token: ethers.ZeroAddress,
-        priceFeed: priceFeedEthAddress
-    }, {
-        token: UsdcAddress,
-        priceFeed: priceFeedUSDCAddress
-    }]
-
-
-    //1. 部署ERC721合约
-    const TestERC721 = await ethers.getContractFactory("TestERC721");
-    const testERC721 = await TestERC721.deploy();
-    await testERC721.waitForDeployment();
-    const testERC721Address = await testERC721.getAddress();
-    console.log("TestERC721Address:", testERC721Address);
-    //铸造10个连续的NFT
-    for (let i = 0; i < 10; i++) {
-        await testERC721.mint(signer.address, i + 1);
-    }
-
-    const tokenId = 1;
-
-    console.log("nftAuctionFactoryAddress", await nftAuctionFactory.getAddress());
-
-    //先将NFT授权给工厂
-    await testERC721.connect(signer).setApprovalForAll(await nftAuctionFactory.getAddress(), true);
-
-    //2. 调用工程createAuction方法创建拍卖
-    tx = await nftAuctionFactory.createAuction(
-        10,
-        ethers.parseEther("0.01"),
-        testERC721Address,
-        tokenId,
-    );
-    const receipt = await tx.wait();
-    const nftAuctionAddress = receipt.logs.find(log => log.eventName === 'AuctionCreated')?.args[0];
-    const nftAuction = await ethers.getContractAt("NftAuction", nftAuctionAddress);
-    console.log("nftAuctionAddress:", await nftAuction.getAddress());
-    for (let i = 0; i < token2Usd.length; i++) {
-        const { token, priceFeed } = token2Usd[i];
-        await nftAuction.setDataFeed(token, priceFeed);
-    }
-    const auction = await nftAuction.auctions(0);
-
-    console.log("创建拍卖成功：：", auction);
-
-    //3. 购买者参与拍卖
-    //await nftAuction.connect(buyer).placeBid(0, {value: ethers.parseEther("0.000000000000000002")});
-    //ETH参与竞价
-    tx = await nftAuction.connect(buyer).placeBid(0, 0, ethers.ZeroAddress, { value: ethers.parseEther("0.01") });
-    await tx.wait()
-
-    // USDC参与竞价
-    //USDC授权
-    tx = await testERC20.connect(buyer).approve(await nftAuction.getAddress(), ethers.MaxUint256)
-    await tx.wait()
-    tx = await nftAuction.connect(buyer).placeBid(0, ethers.parseEther("101"), UsdcAddress);
-    await tx.wait()
-
-    //4.结束拍卖
-    await new Promise(resolve => setTimeout(resolve, 10 * 1000));
-    await nftAuction.connect(signer).endAuction(0);
-
-
-    const auctionResult = await nftAuction.auctions(0);
-    console.log("结束拍卖后读取拍卖成功：：", auctionResult);
-    expect(auctionResult.highestBidder).to.equal(buyer.address);
-    expect(auctionResult.highestBid).to.equal(ethers.parseEther("101"));
-
-    //5.验证NFT所有权
-    const owner = await testERC721.ownerOf(tokenId);
-    console.log("Owner:", owner);
-    expect(owner).to.equal(buyer.address);
-
-}

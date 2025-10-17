@@ -43,6 +43,17 @@ contract NftAuction is Initializable, UUPSUpgradeable {
     //AggregatorV3Interface internal dataFeed;
     mapping(address tokenAddress => AggregatorV3Interface) public dataFeeds;
 
+    event AuctionCreated(
+        uint256 indexed auctionId,
+        address indexed seller,
+        address indexed nftContract,
+        uint256 tokenId,
+        uint256 startPrice,
+        uint256 startTime
+    );
+
+    event NewBid(uint256 auctionId, address indexed bidder, uint256 amount);
+
     function initialize() initializer public {
         admin = msg.sender;
     }
@@ -74,7 +85,8 @@ contract NftAuction is Initializable, UUPSUpgradeable {
     //创建拍卖
     function createAuction(uint256 _duration, uint256 _startPrice, address _nftAddress, uint256 _tokenId) public {
         //只有管理员可以创建拍卖
-        require(msg.sender == admin, "Only admin can create auction");
+        //msg.sender=factory地址
+        //require(msg.sender == admin, "Only admin can create auction");
         //检查参数
         require(_duration >= 10, "Duration must be greater than 10s");
         require(_startPrice > 0, "Start price must be greater then zero");
@@ -96,6 +108,15 @@ contract NftAuction is Initializable, UUPSUpgradeable {
         });
 
         nextAuctionId++;
+
+        emit AuctionCreated(
+            nextAuctionId,
+            msg.sender,
+            _nftAddress,
+            _tokenId,
+            _startPrice,
+            block.timestamp
+        );
     }
 
     //统一价值尺度
@@ -137,6 +158,8 @@ contract NftAuction is Initializable, UUPSUpgradeable {
         auction.highestBidder = msg.sender;
         auction.highestBid = amount;
         auction.tokenAddress = _tokenAddress;
+
+        emit NewBid(_auctionID, msg.sender, amount);
     }
 
     //结束拍卖

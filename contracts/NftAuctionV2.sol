@@ -8,4 +8,8 @@ contract NftAuctionV2 is NftAuction {
     function testHello() public pure returns (string memory) {
         return "test hello";
     }
+
+    function getVersion() public pure returns(string memory) {
+        return "V2.0";
+    }
 }

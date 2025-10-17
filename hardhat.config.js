@@ -1,6 +1,7 @@
 const {deploy} = require("@openzeppelin/hardhat-upgrades/dist/utils");
 
 require("@nomicfoundation/hardhat-toolbox");
+require("@nomicfoundation/hardhat-chai-matchers/withArgs")
 require('hardhat-deploy');
 require("@openzeppelin/hardhat-upgrades");
 

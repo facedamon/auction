@@ -3,14 +3,22 @@ pragma solidity ^0.8;
 
 import {NftAuction} from "./NftAuction.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 contract NftAuctionFactory {
 
     address[] private auctions;
 
-    mapping(uint256 tokenId => NftAuction) private auctionMap;
+    //拍卖合约实现地址
+    address public immutable auctionImplementation;
 
-    event AuctionCreated(address indexed auctionAddress, uint256 tokenId);
+    //mapping(uint256 tokenId => ERC1967Proxy) private auctionMap;
+
+    event AuctionCreated(address indexed auctionAddress, address indexed creator);
+
+    constructor(address _auctionImplementation) {
+        auctionImplementation = _auctionImplementation;
+    }
 
     /**
      * 修改逻辑：
@@ -19,40 +27,29 @@ contract NftAuctionFactory {
      *   3. 工厂授权拍卖合约可以操作NFT
      *   4. 拍卖合约的 createAuction 会从工厂（msg.sender）转移 NFT 到自己
      */
-    function createAuction(
-        uint256 duration,
-        uint256 startPrice,
-        address nftContractAddress,
-        uint256 tokenId) external returns(address) {
-            IERC721(nftContractAddress).safeTransferFrom(msg.sender, address(this), tokenId);
+    function createAuction() external returns(address) {
+        //部署代理合约
+        bytes memory initData = abi.encodeWithSignature("initialize()");
+        ERC1967Proxy proxy = new ERC1967Proxy(auctionImplementation, initData);
 
-            NftAuction auction = new NftAuction();
-            auction.initialize();
-
-            IERC721(nftContractAddress).approve(address(auction), tokenId);
-            auction.createAuction(duration, startPrice, nftContractAddress, tokenId);
-            auctions.push(address(auction));
-            auctionMap[tokenId] = auction;
-
-            emit AuctionCreated(address(auction), tokenId);
-            return address(auction);
+        auctions.push(address(proxy));
+        //auctionMap[tokenId] = proxy;
+        emit AuctionCreated(address(proxy), msg.sender);
+        return address(proxy);
     }
 
-    function getAuction() external view returns (address[] memory) {
+    function getAuctions() external view returns (address[] memory) {
         return auctions;
     }
 
-    function getAuction(uint256 tokenId) external view returns (address) {
-        require(tokenId < auctions.length, "tokenId out of bounds");
-        return address(auctionMap[tokenId]);
+    // 升级代理合约 工厂作为admin有权升级所有它创建的代理合约
+    function upgradeAuction(address proxyAddress, address newImplementation) external {
+        NftAuction proxy = NftAuction(proxyAddress);
+        proxy.upgradeToAndCall(newImplementation, "");
     }
 
-    function onERC721Received(
-        address operator,
-        address from,
-        uint256 tokenId,
-        bytes calldata data
-    ) external pure returns (bytes4) {
-        return this.onERC721Received.selector;
-    }
+//    function getAuction(uint256 tokenId) external view returns (address) {
+//        require(tokenId < auctions.length, "tokenId out of bounds");
+//        return address(auctionMap[tokenId]);
+//    }
 }
